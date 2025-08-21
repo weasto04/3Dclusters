@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K-Means Visualizer (no frameworks)</title>
+  <style>
+    html,body { height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Arial; background:#111; color:#ddd }
+    .app { display:flex; height:100vh; gap:12px; padding:12px; box-sizing:border-box }
+    .panel { width:320px; background:#0f0f12; border-radius:8px; padding:12px; box-shadow:0 8px 30px rgba(0,0,0,0.6) }
+    canvas { flex:1; background:linear-gradient(180deg,#0b1220,#071018); border-radius:8px; display:block }
+    label { display:block; margin-top:8px; font-size:13px }
+    select, button { width:100%; padding:8px 10px; margin-top:6px; font-size:14px; border-radius:6px; border:1px solid #333; background:#111; color:#ddd }
+    .row { display:flex; gap:8px }
+    .muted { color:#9aa0a6; font-size:13px }
+    .controls { margin-top:12px }
+    .footer { margin-top:12px; font-size:12px; color:#9aa0a6 }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h2 style="margin:0 0 6px 0">K-Means Visualizer</h2>
+      <div class="muted">A tiny, framework-free demonstration of k-means in 3D. Rotate with mouse, zoom with wheel.</div>
+
+      <label for="kSelect">Choose k (2–6)</label>
+      <select id="kSelect">
+        <option>2</option>
+        <option>3</option>
+        <option>4</option>
+        <option>5</option>
+        <option>6</option>
+      </select>
+
+      <div class="controls">
+        <button id="initBtn">Init centroids</button>
+        <button id="assignBtn">Assign points → closest centroid</button>
+        <button id="updateBtn">Move centroids to centroids (update)</button>
+        <button id="restartBtn">Restart with new dataset</button>
+      </div>
+
+      <div style="margin-top:12px">
+        <div class="muted">Status:</div>
+        <div id="status">Ready</div>
+      </div>
+
+      <div class="footer">Controls: drag to rotate • wheel to zoom • buttons step through k-means</div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <script>
+  // Simple 3D k-means visualizer without external libs.
+
+  // --- Configuration ---
+  const POINT_COUNT = 240;
+  const DATA_RANGE = 1.2; // coordinates in [-R, R]
+  const CANVAS_BG = '#071018';
+
+  // --- State ---
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  let width = 800, height = 600;
+  let data = [];
+  let centroids = [];
+  let assigned = false;
+  let showLines = false;
+
+  // camera / interaction
+  let rotX = -0.5, rotY = 0.6;
+  let isDragging = false;
+  let lastMouse = null;
+  let cameraDist = 3.2;
+
+  // colors for centroids
+  const palette = ['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33'];
+
+  function setStatus(s){ document.getElementById('status').textContent = s }
+
+  function resize(){
+    width = canvas.clientWidth = canvas.parentElement.clientWidth - 340 > 300 ? canvas.parentElement.clientWidth - 340 : window.innerWidth - 360;
+    height = canvas.clientHeight = window.innerHeight - 24;
+    canvas.width = Math.max(600, width);
+    canvas.height = Math.max(400, height);
+  }
+  window.addEventListener('resize', resize);
+
+  function randCoord(){ return (Math.random()*2-1) * DATA_RANGE }
+
+  function generateData(){
+    data = [];
+    for(let i=0;i<POINT_COUNT;i++){
+      data.push({ x: randCoord(), y: randCoord(), z: randCoord(), assigned: -1 });
+    }
+    assigned = false;
+    showLines = false;
+  }
+
+  function initCentroids(k){
+    centroids = [];
+    for(let i=0;i<k;i++){
+      centroids.push({ x: randCoord(), y: randCoord(), z: randCoord(), color: palette[i%palette.length] });
+    }
+    setStatus(`Initialized ${k} centroids`);
+  }
+
+  // 3D helpers: rotate and project
+  function rotate(p){
+    // rotate around X
+    let y = p.y * Math.cos(rotX) - p.z * Math.sin(rotX);
+    let z = p.y * Math.sin(rotX) + p.z * Math.cos(rotX);
+    // rotate around Y
+    let x = p.x * Math.cos(rotY) + z * Math.sin(rotY);
+    z = -p.x * Math.sin(rotY) + z * Math.cos(rotY);
+    return { x, y, z };
+  }
+
+  function project(p){
+    const vp = rotate(p);
+    const f = 1.8; // focal
+    const perspective = f / (f + vp.z + cameraDist);
+    return { x: width/2 + vp.x * width * 0.35 * perspective, y: height/2 - vp.y * height * 0.35 * perspective, z: vp.z, scale: perspective };
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = CANVAS_BG;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // compute projections
+    const pdata = data.map(pt => ({src:pt, p:project(pt)}));
+    const cdata = centroids.map(c => ({src:c, p:project(c)}));
+
+    // optionally draw assignment lines
+    if(showLines){
+      ctx.lineWidth = 0.9;
+      for(let i=0;i<pdata.length;i++){
+        const a = pdata[i];
+        const ci = a.src.assigned;
+        if(ci >=0 && centroids[ci]){
+          ctx.beginPath();
+          ctx.strokeStyle = centroids[ci].color + '88';
+          ctx.moveTo(a.p.x, a.p.y);
+          ctx.lineTo(cdata[ci].p.x, cdata[ci].p.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // draw data points sorted by depth (farthest first)
+    pdata.sort((a,b)=> a.p.z - b.p.z);
+    for(const item of pdata){
+      const p = item.p;
+      const s = Math.max(1, 6 * item.p.scale);
+      ctx.beginPath();
+      ctx.fillStyle = item.src.assigned>=0 ? centroids[item.src.assigned].color : '#aab3bd';
+      ctx.globalAlpha = item.src.assigned>=0 ? 0.95 : 0.85;
+      ctx.arc(p.x, p.y, s, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // draw centroids on top
+    cdata.sort((a,b)=> b.p.z - a.p.z);
+    for(const c of cdata){
+      const p = c.p;
+      ctx.beginPath();
+      ctx.fillStyle = c.src.color;
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.arc(p.x, p.y, 10 * Math.max(1, c.p.scale), 0, Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  // assign each data point to closest centroid
+  function assignPoints(){
+    if(centroids.length===0){ setStatus('No centroids: click Init centroids'); return; }
+    for(const pt of data){
+      let best = 0;
+      let bestd = Infinity;
+      for(let i=0;i<centroids.length;i++){
+        const c = centroids[i];
+        const dx = pt.x - c.x, dy = pt.y - c.y, dz = pt.z - c.z;
+        const d2 = dx*dx+dy*dy+dz*dz;
+        if(d2 < bestd){ bestd = d2; best = i; }
+      }
+      pt.assigned = best;
+    }
+    assigned = true;
+    showLines = true;
+    setStatus('Assigned points to centroids');
+  }
+
+  function updateCentroidsAnimated(){
+    if(!assigned){ setStatus('Assign points first'); return; }
+    const k = centroids.length;
+    const sums = Array.from({length:k}, ()=> ({x:0,y:0,z:0,count:0}));
+    for(const pt of data){
+      if(pt.assigned>=0){
+        const s = sums[pt.assigned]; s.x += pt.x; s.y += pt.y; s.z += pt.z; s.count++;
+      }
+    }
+    const targets = [];
+    for(let i=0;i<k;i++){
+      if(sums[i].count>0){ targets.push({ x: sums[i].x/sums[i].count, y: sums[i].y/sums[i].count, z: sums[i].z/sums[i].count }); }
+      else { targets.push({ x: randCoord(), y: randCoord(), z: randCoord() }); }
+    }
+
+    // animate centroids moving to targets
+    const duration = 480; // ms
+    const start = performance.now();
+    const startPos = centroids.map(c=>({x:c.x,y:c.y,z:c.z}));
+
+    function step(now){
+      const t = Math.min(1, (now-start)/duration);
+      for(let i=0;i<k;i++){
+        centroids[i].x = startPos[i].x + (targets[i].x - startPos[i].x) * t;
+        centroids[i].y = startPos[i].y + (targets[i].y - startPos[i].y) * t;
+        centroids[i].z = startPos[i].z + (targets[i].z - startPos[i].z) * t;
+      }
+      draw();
+      if(t < 1) requestAnimationFrame(step);
+      else setStatus('Centroids updated');
+    }
+    requestAnimationFrame(step);
+  }
+
+  // restart dataset
+  function restart(){ generateData(); centroids=[]; assigned=false; showLines=false; setStatus('New dataset'); }
+
+  // interaction handlers
+  canvas.addEventListener('mousedown', (e)=>{
+    isDragging = true; lastMouse = {x:e.clientX, y:e.clientY};
+  });
+  window.addEventListener('mouseup', ()=>{ isDragging=false; lastMouse=null; });
+  window.addEventListener('mousemove', (e)=>{
+    if(!isDragging) return;
+    const dx = (e.clientX - lastMouse.x)/200;
+    const dy = (e.clientY - lastMouse.y)/200;
+    rotY += dx; rotX += dy;
+    lastMouse = {x:e.clientX, y:e.clientY};
+    draw();
+  });
+  canvas.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    cameraDist += e.deltaY * 0.0012;
+    cameraDist = Math.max(1.0, Math.min(6, cameraDist));
+    draw();
+  }, {passive:false});
+
+  // UI wiring
+  document.getElementById('initBtn').addEventListener('click', ()=>{
+    const k = parseInt(document.getElementById('kSelect').value,10);
+    initCentroids(k);
+    draw();
+  });
+  document.getElementById('assignBtn').addEventListener('click', ()=>{ assignPoints(); draw(); });
+  document.getElementById('updateBtn').addEventListener('click', ()=>{ updateCentroidsAnimated(); });
+  document.getElementById('restartBtn').addEventListener('click', ()=>{ restart(); draw(); });
+
+  // init
+  generateData();
+  resize();
+  draw();
+  setStatus('Ready — choose k and click Init centroids');
+
+  // animation loop to re-render for smooth moves
+  function tick(){ draw(); requestAnimationFrame(tick); }
+  requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
